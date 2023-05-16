@@ -1,0 +1,209 @@
+% DCM    - {N [x M]} structure array of DCMs from N subjects
+% -------------------------------------------------------------------------
+%     DCM{i}.M.pE   - prior expectation of parameters
+%     DCM{i}.M.pC   - prior covariances of parameters
+%     DCM{i}.Ep     - posterior expectations
+%     DCM{i}.Cp     - posterior covariance
+%     DCM{i}.F      - free energy
+%
+% M.X      - 2nd-level design matrix: X(:,1) = ones(N,1) [default]
+% M.bE     - 3rd-level prior expectation [default: DCM{1}.M.pE]
+% M.bC     - 3rd-level prior covariance  [default: DCM{1}.M.pC/M.alpha]
+% M.pC     - 2nd-level prior covariance  [default: DCM{1}.M.pC/M.beta]
+% M.hE     - 2nd-level prior expectation of log precisions [default: 0]
+% M.hC     - 2nd-level prior covariances of log precisions [default: 1/16]
+% M.maxit  - maximum iterations [default: 64]
+%
+% M.Q      - covariance components: {'single','fields','all','none'}
+% M.alpha  - optional scaling to specify M.bC [default = 1]
+% M.beta   - optional scaling to specify M.pC [default = 16]
+%          - if beta equals 0, sample variances will be used
+%
+% NB: the prior covariance of 2nd-level random effects is:
+%            exp(M.hE)*DCM{1}.M.pC/M.beta [default DCM{1}.M.pC/16]
+%
+% NB2:       to manually specify which parameters should be assigned to 
+%            which covariance components, M.Q can be set to a cell array of 
+%            [n x n] binary matrices, where n is the number of DCM 
+%            parameters. A value of M.Q{i}(n,n)==1 indicates that parameter 
+%            n should be modelled with component i.
+% M.Xnames - cell array of names for second level parameters [default: {}]
+% 
+% field    - parameter fields in DCM{i}.Ep to optimise [default: {'A','B'}]
+%            'All' will invoke all fields. This argument effectively allows 
+%            one to specify the parameters that constitute random effects.     
+% 
+% PEB      - hierarchical dynamic model
+%
+%     PEB.Snames    - string array of first level model names
+%     PEB.Pnames    - string array of parameters of interest
+%     PEB.Pind      - indices of parameters in spm_vec(DCM{i}.Ep) 
+%     PEB.Xnames - names of second level parameters
+% 
+%     PEB.M.X       - second level (between-subject) design matrix
+%     PEB.M.W       - second level (within-subject) design matrix
+%     PEB.M.Q       - precision [components] of second level random effects 
+%     PEB.M.pE      - prior expectation of second level parameters
+%     PEB.M.pC      - prior covariance of second level parameters
+%     PEB.M.hE      - prior expectation of second level log-precisions
+%     PEB.M.hC      - prior covariance of second level log-precisions
+%     PEB.Ep        - posterior expectation of second level parameters
+%     PEB.Eh        - posterior expectation of second level log-precisions
+%     PEB.Cp        - posterior covariance of second level parameters
+%     PEB.Ch        - posterior covariance of second level log-precisions
+%     PEB.Ce        - expected  covariance of second level random effects
+%     PEB.F         - free energy of second level model
+% DCM           - 1st level (reduced) DCM structures with empirical priors
+%
+%          If DCM is an an (N x M} array, hierarchical inversion will be
+%          applied to each model (i.e., each row) - and PEB will be a 
+%          {1 x M} cell array.
+% This routine inverts a hierarchical DCM using variational Laplace and
+% Bayesian model reduction. 
+% In essence, it optimises the empirical priors 
+% over the parameters of a set of first level DCMs, using second level or
+% between subject constraints specified in the design matrix X. 
+% This scheme is efficient in the sense that it does not require inversion of the first level DCMs 
+% - it just requires the prior and posterior densities from each
+% first level DCM to compute empirical priors under the implicit
+% hierarchical model. 
+% The output of this scheme (PEB) can be re-entered
+% recursively to invert deep hierarchical models. 
+% Furthermore, Bayesian
+% model comparison (BMC) can be specified in terms of the empirical priors
+% to perform BMC at the group level. 
+% Alternatively, subject-specific (first level) posterior expectations 
+% can be used for classical inference in the usual way. 
+% Note that these (summary statistics) are optimal in the sense
+% that they have been estimated under empirical (hierarchical)  priors.
+%
+% If called with a single DCM, there are no between-subject effects and the
+% design matrix is assumed to model mixtures of parameters at the first level.
+%
+% If called with a cell array, each column is assumed to contain 1st
+% level DCMs inverted under the same model.
+%
+%
+% get filenames and set up
+if ~nargin
+    [P, sts] = spm_select([2 Inf],'^DCM.*\.mat$','Select DCM*.mat files');
+    if ~sts, return; end
+end
+if ischar(P),   P = cellstr(P);  end
+% This is done to handle the case where a single file path was selected instead of multiple paths.
+if isstruct(P), P = {P};         end
+% This is done to handle the case where a single structure was provided instead of multiple structures.
+%%%%%%
+% if ~nargin: this condition checks if the number of input argument ('nargin') is zero.
+% In matlab, 'nargin' returns the number of input arguments provided to a function.
+% '~' symbol negates the regults
+% therefore, if no input arguments are provided, the condistion is true.
+% 'spm_select' function: select files that match the pattern 'DCM*.MAT'.
+% [2 Inf]: it expects at least 2 files.
+% [P, sts]: returns two outputs: P and sts, 
+% 'P' is a variable that will store the paths to the selected files
+% 'sts' is a status variable that indicates whether the file selection was successful or not.
+% if ~sts: if the file selection was unsuccessful (sts is false)
+% return: will exit the current function or script and return to the calling function.
+% In summary, these lines of code allow the user to either provide file paths, a single path, or no input at all. 
+% If no input is provided, the code prompts the user to select files matching a specific pattern. 
+% The selected paths are then processed and converted into a consistent format for further processing in the code.
+%
+% check for DEM structures
+try
+    DEM = P;
+    P   = spm_dem2dcm(P);
+end
+%
+% check parameter fields and design matrices
+try, load(P{1}); catch, DCM = P{1}; end
+
+if nargin < 2,      M.X = ones(length(P),1); end
+if isnumeric(M),    M   = struct('X',M);     end
+if ~isfield(M,'X'), M.X = ones(length(P),1); end
+if isempty(M.X),    M.X = ones(length(P),1); end
+
+if nargin < 3; field = {'A','B'};  end
+if strcmpi(field,'all');  field = fieldnames(DCM.M.pE);end
+if ischar(field), field = {field}; end
+
+try, maxit = M.maxit; catch, maxit = 64; end
+%%%%%%%%
+% try, load(P{1}): load the contents of the first element in the cell array 'P', if fails (e.g. if the element is not a valid file path)
+% catch, DCM=P{1}: it assumes that 'P{1}' is already a loaded variable or structure and assigns it directly to the variable 'DCM'
+% if nargin <2: it means that only one input argument 'P' provided
+% M.X = ones(length(P),1); in this case, it creates a design matrix with ones, where rows = the length of P
+% if isnumeric(M), M = struct('X',M): handle the case where M is provided as a numeric array instead of a structure.
+% if ~isfiled(M,'X'), M.X = ones(length(P),1): handle the case where M is a structure, but it does not have the field X.
+% isempty: done to handle the case where M.X is an empty array.
+% if nargin < 3, P√ M√，defult field;
+% all: assign field as the name of the fileds in the DCM.M.pE.?????DCM.M.pE where????
+% character array(string): converts into a cell array containing the string as its only element. {'A'}
+% matrix: specifies the maximum number of iterations for a specific operation\
+% In summary, checks and assignments related to parameter fields and design matrices.
+%
+% repeat for each model (column) if P is an array
+if size(P,2) > 1
+    for i = 1:size(P,2)
+        [p,q]   = spm_dcm_peb(P(:,i),M,field);
+        PEB(i)  = p;
+        P(:,i)  = q;
+    end
+    return
+end
+%%%%%
+% if : P contains multiple models (>1)
+% for: the loop will execute as many times as there are columns in P
+% spm_dcm_peb: performs some calculations or operations on the specific model and returns two outputs: 'p' and 'q'
+% PEB(i) = p:assign the value of p to i, it is used to store the results or outputs obatained from each model separately, each element in PEB corresponds to a specific model's result
+% P(:,i) =q: updates P natrix with the modified values after performing calculations or operations on each model. This allows the changes made to each model to be preseved in P
+% return: precessing all the models when P contains multiple columns
+%
+% get (first level) densities (summary statistics)
+%==========================================================================
+% select DCM parameters
+% -------------------------------------------------------------------------
+Ns    = numel(P);                               % number of subjects
+if isfield(M,'bC') && Ns > 1
+    q = spm_find_pC(M.bC,M.bE,field);           % parameter indices
+elseif isnumeric(field)
+    q = field;                                  % parameter indices
+else
+    q = spm_find_pC(DCM,field);                 % parameter indices
+end
+%%%%%
+% Ns = numel(P): representing the number of subjects or models.
+% if:check the M has a field named bC and if Ns >1.
+% if √: spm_find_pC function and passes three arguments: M.bc, M.be, field.And returened indices are assigned to the variable q
+% elseif√ (if ×): check if represents explicit parameter indices. assume that field contains explicit parameter indices
+% else(if× elseif×): call spm_find_pC function and passes two arguments (DCM and field)
+% It's used to find the parameter indices based on he provided DCM structure and field values. The returened indices are assigned to the variable q
+% In sum, this codes responsible for selecting the DCM parameters.
+%
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
