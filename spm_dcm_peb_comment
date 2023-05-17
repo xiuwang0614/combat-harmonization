@@ -180,10 +180,88 @@ end
 % It's used to find the parameter indices based on he provided DCM structure and field values. The returened indices are assigned to the variable q
 % In sum, this codes responsible for selecting the DCM parameters.
 %
+% prepare field names
+try
+    Pstr  = spm_fieldindices(DCM.M.pE,q);       % field names 
+catch
+    if isfield(DCM,'Pnames')
+        % PEB given as input. Field names have form covariate:fieldname
+        Pstr  = [];
+        for i = 1:length(DCM.Xnames)
+            str  = strcat(DCM.Xnames{i}, ': ', DCM.Pnames);
+            Pstr = [Pstr; str];
+        end
+    else
+        % Generate field names
+        q = q(:);
+        Pstr  = strcat('P', cellstr(num2str(q)));
+    end
+end
 
-
-
-
+% count parameters
+Np = numel(q);                               
+if Np == 1
+    Pstr = {Pstr}; 
+end
+%%%%%%%%%
+% try Pster = spm_fieldindics(DCM.M.pE,q): function spm_fieldindics with two arguments (DCM.M.pE and q). Attempts to retrive the field names corrsponding to the parameter indices q from the DCM.M.qE structuer.
+% catch: try×, execute the catch block.
+% if: check if DCM structure has a field named Pnames.
+% Pstr=[]: empty array Pstr to store the field names.
+% for: iterates over the elements of DCM.Xnames, assuming it is a cell array. It iterates over the covariate names associated with DCM.
+% str: concatenates the i-th element of DCM.Xname + : + DCM.Pnames, forms a string representing the covariate name and the associated field names.
+% Pstr: appends the string str to the Pstr array, builds up the array of field names.
+% else√ (try×, if×): this block executed.
+% q = q(:): convert the variable q into a column vector by using the colon operator: and assign it back to q.
+% Pstr: convert numeric values in q to string(num2str, [1;2;3] -> '1 2 3'),convert the resulting character array into a cell array of strings(cellstr, '1 2 3' -> {'1'; '2'; '3'}), wraps each value with P, and concatenates them to form the field name(strcat'P': {'P1';'P2';'P3'}).
+% Np: calculates the number of elements in the vector q, and assign it to Np.
+% if: check if Np ==1, if so, it convert Pstr into a cell array containning a single element.
+% in sum, prepares the field names associated with the DCM parameters.
+% ?? mine is else? try.
+% read and unpack DCM(s)
+for i = 1:Ns
+    
+    % get DCM
+    try, load(P{i}); catch, DCM = P{i}; end
+    
+    % get prior and posterior densities over all parameters
+    if isstruct(DCM.M.pC)
+        pC{i} = diag(spm_vec(DCM.M.pC));
+    else
+        pC{i} = DCM.M.pC;
+    end
+    pE{i} = spm_vec(DCM.M.pE);
+    qE{i} = spm_vec(DCM.Ep);
+    qC{i} = DCM.Cp;
+    
+    % check priors
+    if i == 1
+        Ne = numel(pE{i});
+    end
+    if numel(pE{i}) ~= Ne
+        error('Please ensure all DCMs have the same parameterisation');
+    end
+    
+    % and get the free energy of model with full priors
+    iF(i) = DCM.F;
+    
+end
+%%%%%
+% for: initiates a loop tha from 1 to Ns (representing the number of subjs)
+% try: load the file specified by P{i}, if failed, assumes that P{i} already contains the DCM structure and assign it to DCM. P could be a file path or a preloaded DCM structure.
+% if: check if DCM.M.pC is a structure, whether pC within DCM.M, represents a covariance matrix.
+%% pC: prior covariabces of parameters.
+% pC{i}: if the condition in if is ture, extractes the diagonal elements of the covariance matrix DCM.M.pC(diag). the result assigned pC at the i-th position.
+% pC of mine: 198×198 double
+% else(if×)
+% pC{i}: assign the value of DCM.M.pC directly to pC at i-th position.
+% pE{i}: extracts the expected values of the parameters pE from the field DCM.M.pE (spm_vec).
+% qE{i}
+% qC{i}
+% i==1 & numel(pE{i}) ~= Ne: check all DCMs have the same parameterization.
+% iF(i)
+% In sum, snippet reads and unpacks the DCMs, for each subjs.
+%%%%%%
 
 
 
