@@ -215,6 +215,7 @@ end
 % q = q(:): convert the variable q into a column vector by using the colon operator: and assign it back to q.
 % Pstr: convert numeric values in q to string(num2str, [1;2;3] -> '1 2 3'),convert the resulting character array into a cell array of strings(cellstr, '1 2 3' -> {'1'; '2'; '3'}), wraps each value with P, and concatenates them to form the field name(strcat'P': {'P1';'P2';'P3'}).
 % Np: calculates the number of elements in the vector q, and assign it to Np.
+% The value of Np will then be calculated as numel(q), which represents the number of elements in q. Since A is a 12x12 matrix, the size of q will be 144 (12 * 12), and thus Np will be assigned the value 144.
 % if: check if Np ==1, if so, it convert Pstr into a cell array containning a single element.
 % in sum, prepares the field names associated with the DCM parameters.
 % ?? mine is else? try.
@@ -262,6 +263,251 @@ end
 % iF(i)
 % In sum, snippet reads and unpacks the DCMs, for each subjs.
 %%%%%%
+% deal with variability across subjects' priors (arithmetic mean)
+PE = spm_zeros(pE{1}(q));
+PC = spm_zeros(pC{1}(q,q));
+for i = 1:Ns
+    PE = PE + pE{i}(q);
+    PC = PC + pC{i}(q,q);
+end
+PE = PE ./ Ns;
+PC = PC ./ Ns;
+%%%%%
+% PE: pE{1}(q) c=selects the elements of the prior means (pE) corresponding to the indices in q. store the accumulated of prior means across subjects.
+% spm_zeros(): a function that creates a matrix filled with 0. And takes the size of pE{1}(q) as an input and creates a matrix of 0s with the same dimensions.
+% PC-pC{1}(q,q)
+% PE = PE + PE{i}(q): add the prior mean vector of the current subject, and performs element-wise addition.
+% PC
+% PE = PE ./ Ns:calculates the arithmetic mean of pE across subjects.
+% PC
+% In sum, calculate the average (PE) and the average (PC) across all subjects. This helps to deal with variability in the priors across subjects, providing a consolidated representation of the prior information for further analysis.
+%
+% deal with rank deficient priors
+U = spm_svd(PC);
+%%%%%%%
+% svd: singular value decomposition, decomposes a matrix into 3 components: U, S, and V. dimensionality reduction or extracting meaningful features.
+% U: output, contains the left singular vectors of PC.represent the principal components of direction of maximum variance, provide info. about the pattern of variability in PC.
+%
+% for i = 1:Ns
+    % select parameters in field
+    pE{i} = U'*pE{i}(q); 
+    pC{i} = U'*pC{i}(q,q)*U; 
+    qE{i} = U'*qE{i}(q); 
+    qC{i} = U'*qC{i}(q,q)*U;
+    
+    % shrink posterior to accommodate inefficient inversions
+    if Ns > 1
+       qC{i} = spm_inv(spm_inv(qC{i}) + spm_inv(pC{i})/16);
+    end        
+end
+%%%%%%
+% U'*pE{i}(q): applies the transformation to the selected pE, resulting in the transformed pE for i-th subj.
+%% essentially, projects the pE onto the subspace defined by the left singular vectors.
+% U'*pC{i}(q,q)*U
+% U'*qE{i}(q)
+% U'*qC{i}(q,q)*U
+% spm_inv():compute the inverse of a matrix.
+% pC{i})/16: computes the inverse of the pC for i-th subj divided by 16.
+% qC{i}
+% purpose: shrink the qC, and more robust and reliable estimates qC.
+%
+% hierarchical model design and defaults
+%
+% second level model
+if  isfield(M,'alpha'), alpha  = M.alpha; else, alpha = 1;        end
+if  isfield(M,'beta'),  beta   = M.beta;  else, beta  = 16;       end
+if ~isfield(M,'W'),     M.W    = speye(Np,Np);        
+%%%%%%
+% M.alpha
+% M.beta
+% M.W: does not exit, a sparse identity matrix, speye(Np,Np), as default weighting matrix used in the second-level model.
+% 
+% covariance component specification
+Q = {};
+if ~isfield(M,'Q')
+    OPTION = 'single';
+elseif iscell(M.Q) && isnumeric(M.Q{1})
+    OPTION = 'manual';
+    Q = M.Q;
+else
+    OPTION = M.Q;
+end
+%%%%%
+% Q = {}: empty cell array to store the covariance components specified for the second-level model.
+% ~isfield: check if M.field
+% option: single indicating that a single covariance component will be used.
+% iscell && isnumeric: check if field Q.M is cell array and first element is numeric
+% option: manually specified covariance components in Q
+% M.Q = 'all'
+% snippet determines the specifcation of covariance components Q for the second-level model
+%
+% design matrices
+if Ns > 1;
+    
+    % between-subject design matrices and prior expectations
+    %======================================================================
+    X   = M.X;
+    W   = U'*M.W*U;
+    
+else
+    
+    % within subject design
+    %======================================================================
+    OPTION = 'none';
+    U      = 1;
+    X      = 1;
+    W      = M.W;
+
+end
+%%%%%%%%
+% M.X:design matrix represents the group-level effects or differences between subjects.
+% W: calculates the weighted bewteen-subjects design matrix. Resulting in the weighted design matrix W(incorporates subj-spe variations.)
+% Ns =1, within subject design.
+% in sum, specification of design matrices for second-level model, between-subj design matrices and pC(U) are specified
+% 
+% variable names
+if isfield(M,'Xnames')
+    Xnames = M.Xnames;
+else
+    Nx = size(X,2);
+    Xnames = cell(1,Nx);
+    for i = 1:Nx
+        Xnames{i} = sprintf('Covariate %d',i);
+    end
+end
+%%%%%%%%%
+%Nx = size(x,2): calculates the number of columns in the design matrix, X is corresponds to the number of covariates or vairable in the design.
+% Xnames = cell(1,Nx): initailzes an empty cell array Xnames, approprate size to store the variable names.
+% sprintf('Covariate %d',i): sprintf function to create a string withe format, %d is replaced by i. e.g. Covariate 1
+% in sum, M.Xnames, according to the number of columns in the design matrix X.
+%
+% get priors (from DCM if necessary) and ensure correct sizes
+if isfield(M,'bE')
+    M.bE = spm_vec(M.bE);
+    if size(M.bE,1) > Np && Ns > 1, M.bE = M.bE(q);   end
+else
+    M.bE = PE;
+end
+%%%%%%%%%
+% M.bE
+% spm_vec(M.bE): ensures M.bE converted into a column vector(spm_vec).
+% Np(numel(q)) && Ns(numel(P))
+% M.bE = PE: assign the prior expectations PE to M.bE
+% In sum, M.bE.
+%
+% prior covariance of (e.g.,) group effects
+if isfield(M,'bC')
+    if isstruct(M.bC),    M.bC = diag(spm_vec(M.bC)); end
+    if size(M.bC,1) > Np && Ns > 1, M.bC = M.bC(q,q); end
+else
+    M.bC = PC/alpha;
+end
+%%%%%%%
+% M.bC
+%
+% between (e.g.,) subject covariances (for precision components Q)--
+if isfield(M,'pC')
+    if isstruct(M.pC),    M.pC = diag(spm_vec(M.pC)); end
+    if size(M.pC,1) > Np && Ns > 1, M.pC = M.pC(q,q); end
+elseif ~beta
+    
+    % If beta = 0, use variance of MAP estimators
+    %----------------------------------------------------------------------
+    M.pC = diag(var(spm_cat(qE),1,2));
+    
+else
+    
+    % otherwise, use a scaled prior covariance
+    %----------------------------------------------------------------------
+    M.pC = PC/beta;
+end
+%%%%%%%%%
+% pC is numeric (198×198): the relevant subset of M.pC is selected using M.pC(q,q)
+% M.pC = M.pC(q,q)
+%
+% prior precision (pP) and components (Q) for empirical covariance
+pQ    = spm_inv(U'*M.pC*U);
+rP    = pQ;
+switch OPTION
+    
+    case{'single'}
+        
+        % one between subject precision component
+        %------------------------------------------------------------------
+        Q = {pQ};
+        
+    case{'fields'}
+        
+        % between subject precision components (one for each field)
+        %------------------------------------------------------------------
+        pq    = spm_inv(M.pC);
+        for i = 1:length(field)
+            j    = spm_fieldindices(DCM.M.pE,field{i});
+            j    = find(ismember(q,j));            
+            Q{i} = sparse(Np,Np);
+            Q{i}(j,j) = pq(j,j);
+            Q{i} = U'*Q{i}*U;
+        end
+        
+    case{'all'}
+        
+        % between subject precision components (one for each parameter)
+        %------------------------------------------------------------------
+        pq    = spm_inv(M.pC);
+        k     = 1;
+        for i = 1:Np
+            qk = sparse(i,i,pq(i,i),Np,Np);            
+            qk = U'*qk*U;
+            if any(qk(:))
+                Q{k} = qk;
+                k    = k + 1;
+            end
+        end
+        
+    case {'manual'}
+        
+        % manually provided cell array of (binary) precision components
+        %------------------------------------------------------------------
+        pq = spm_inv(M.pC);
+        k = 1;
+        for i = 1:length(Q)
+            j       = find(diag(Q{i}));
+            j       = find(ismember(q,j));
+            qk      = sparse(Np,Np);
+            qk(j,j) = pq(j,j);
+            qk      = U'*qk*U;
+            if any(qk(:))
+                Q{k} = qk;
+                k = k + 1;
+            end
+        end
+        
+    case {'none'}
+        % Do nothing
+        
+    otherwise
+        warning('Unknown covariance component specification');
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
