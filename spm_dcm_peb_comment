@@ -488,7 +488,11 @@ switch OPTION
     otherwise
         warning('Unknown covariance component specification');
 end
-
+%%%%%%%%%%%%
+% pQ: presents the prior precision matrix, computed by THE inverse U'*M.pC*U'(spm_inv) , U(spm_svd(PC));
+% rP
+% switch OPTION: detemine the value of the OPTION.
+% 
 
 
 
